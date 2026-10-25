@@ -1,0 +1,22 @@
+{
+  "name": "AI PDF Reader Lite",
+  "short_name": "AI Reader",
+  "description": "Lightweight night-theme PDF reader with stylus highlighting and dual input",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#090714",
+  "theme_color": "#090714",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

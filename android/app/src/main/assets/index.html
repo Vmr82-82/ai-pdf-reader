@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AI PDF Reader Lite</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+  <meta name="theme-color" content="#090714">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="vendor/pdf_viewer.css">
+  <link rel="stylesheet" href="css/reader.css">
+</head>
+<body class="theme-charcoal">
+
+  <!-- Main Toolbar -->
+  <header class="toolbar" id="toolbar">
+    <div class="tool-group">
+      <button class="btn" id="openFileBtn" title="Open PDF File">
+        📁 <span>Open PDF</span>
+      </button>
+      <input type="file" id="fileInput" accept=".pdf" style="display:none">
+      <span class="doc-title" id="docTitle">Select a book or PDF</span>
+    </div>
+
+    <!-- Page Navigation -->
+    <div class="tool-group">
+      <div class="page-controls">
+        <button class="btn btn-icon" id="prevBtn" title="Previous Page">‹</button>
+        <input type="number" id="pageInput" class="page-input" value="1" min="1">
+        <span style="font-size:12px;opacity:0.7">/</span>
+        <span id="totalPages" style="font-size:12px;opacity:0.7;margin-right:4px">1</span>
+        <button class="btn btn-icon" id="nextBtn" title="Next Page">›</button>
+      </div>
+
+      <!-- Zoom -->
+      <button class="btn btn-icon" id="zoomOutBtn" title="Zoom Out">−</button>
+      <button class="btn btn-icon" id="zoomInBtn" title="Zoom In">+</button>
+    </div>
+
+    <!-- Pen Palette & Theme & Drawer -->
+    <div class="tool-group">
+      <!-- 5 Luminous Colors -->
+      <div class="palette" title="Highlighter Color">
+        <span class="color-dot active" data-color="amber" title="Amber (Core Concepts)"></span>
+        <span class="color-dot" data-color="emerald" title="Emerald (Definitions)"></span>
+        <span class="color-dot" data-color="cyan" title="Cyan (Examples)"></span>
+        <span class="color-dot" data-color="violet" title="Violet (Key Insights)"></span>
+        <span class="color-dot" data-color="rose" title="Rose (Critical Points)"></span>
+      </div>
+
+      <div class="mode-indicator" id="modeIndicator">
+        🖊️ Stylus Ready
+      </div>
+
+      <!-- Theme Switcher -->
+      <button class="btn" id="themeBtn">🌙 OLED Night</button>
+
+      <!-- Highlights Drawer Toggle -->
+      <button class="btn" id="openDrawerBtn" title="View Highlights">
+        🔖 Highlights (<span id="hlBadge">0</span>)
+      </button>
+    </div>
+  </header>
+
+  <!-- PDF Viewport Container -->
+  <main id="viewerContainer">
+    <div class="page-wrapper" id="pageWrapper">
+      <canvas id="pdfCanvas"></canvas>
+      <div class="textLayer" id="textLayer"></div>
+      <div class="highlightLayer" id="highlightLayer"></div>
+    </div>
+  </main>
+
+  <!-- Highlights Drawer -->
+  <aside class="drawer" id="highlightsDrawer">
+    <div class="drawer-header">
+      <span class="drawer-title">Highlights & Quotes</span>
+      <div class="drawer-actions">
+        <button class="btn" id="exportBtn" style="font-size:12px;padding:4px 8px">📋 Obsidian</button>
+        <button class="btn btn-icon" id="closeDrawerBtn">✕</button>
+      </div>
+    </div>
+    <div class="highlights-list" id="highlightsList">
+      <!-- Highlight cards rendered here -->
+    </div>
+  </aside>
+
+  <!-- Popover for clicked highlight -->
+  <div id="hlPopover"></div>
+
+  <!-- Toast Notification -->
+  <div id="toast"></div>
+
+  <script type="module" src="js/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW error:', err));
+      });
+    }
+  </script>
+</body>
+</html>
