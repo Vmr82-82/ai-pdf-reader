@@ -58,7 +58,13 @@ class ReaderApp {
 
   initEvents() {
     // Open file
-    document.getElementById('openFileBtn').addEventListener('click', () => this.fileInput.click());
+    document.getElementById('openFileBtn').addEventListener('click', () => {
+      if (window.AndroidBridge && typeof window.AndroidBridge.openNativePdfPicker === 'function') {
+        window.AndroidBridge.openNativePdfPicker();
+      } else {
+        this.fileInput.click();
+      }
+    });
     this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
 
     // Page navigation
@@ -182,6 +188,30 @@ class ReaderApp {
       this.showToast(`Loaded: ${name}`);
     } catch (err) {
       console.error(err);
+      this.showToast('Could not load PDF document', 'error');
+    }
+  }
+
+  async loadPdfFromUrl(url, name) {
+    try {
+      this.docTitle.textContent = name;
+      this.docId = 'doc_' + name.replace(/[^a-zA-Z0-9_-]/g, '_');
+      this.pdfDoc = await pdfjsLib.getDocument({ url: url }).promise;
+      this.totalPages = this.pdfDoc.numPages;
+      this.totalPagesEl.textContent = this.totalPages;
+
+      // Load saved page
+      const savedPage = await Storage.getSetting(`last_page_${this.docId}`, 1);
+      this.currentPage = Math.min(Math.max(1, savedPage), this.totalPages);
+
+      // Load highlights for this document
+      this.highlights = await Storage.getHighlightsForDoc(this.docId);
+      this.updateHighlightBadge();
+
+      this.renderPage(this.currentPage);
+      this.showToast(`Loaded: ${name}`);
+    } catch (err) {
+      console.error('Error loading PDF from URL:', err);
       this.showToast('Could not load PDF document', 'error');
     }
   }
