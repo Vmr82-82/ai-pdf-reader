@@ -5,6 +5,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
+import android.util.Base64;
+import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -13,20 +15,32 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.webkit.WebViewAssetLoader;
+
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
+    private static final String TAG = "MainActivity";
     private WebView webView;
     private Uri currentPdfUri = null;
     private String currentPdfName = "Document.pdf";
-    private boolean isPageLoaded = false;
+    private boolean isJsReady = false;
     private final static int PICK_PDF_REQUEST = 2002;
+    private WebViewAssetLoader assetLoader;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         webView = new WebView(this);
         setContentView(webView);
+
+        // Configure asset loader to serve local assets over https://appassets.androidplatform.net/assets/
+        assetLoader = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -48,9 +62,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                isPageLoaded = true;
-                // If the app was opened with a PDF, load it now
-                if (currentPdfUri != null) {
+                if (isJsReady && currentPdfUri != null) {
                     dispatchCurrentPdfToJs();
                 }
             }
@@ -58,24 +70,43 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
-                if (url != null && url.getPath() != null && url.getPath().endsWith("current_pdf_stream")) {
-                    if (currentPdfUri != null) {
-                        try {
-                            InputStream is = getContentResolver().openInputStream(currentPdfUri);
-                            return new WebResourceResponse("application/pdf", "binary", is);
-                        } catch (Exception e) {
-                            e.printStackTrace();
+                if (url != null && url.getPath() != null) {
+                    String path = url.getPath();
+                    if (path.contains("current_pdf_stream")) {
+                        if (currentPdfUri != null) {
+                            try {
+                                InputStream is = getContentResolver().openInputStream(currentPdfUri);
+                                if (is != null) {
+                                    Map<String, String> headers = new HashMap<>();
+                                    headers.put("Access-Control-Allow-Origin", "*");
+                                    headers.put("Access-Control-Allow-Methods", "GET, OPTIONS");
+                                    headers.put("Accept-Ranges", "none");
+                                    headers.put("Content-Type", "application/pdf");
+                                    return new WebResourceResponse("application/pdf", null, 200, "OK", headers, is);
+                                }
+                            } catch (Exception e) {
+                                Log.e(TAG, "Error opening PDF stream", e);
+                            }
                         }
+                    } else if (path.endsWith(".mjs")) {
+                        // Ensure correct MIME type for ES modules
+                        try {
+                            String assetPath = path.replaceFirst("^/assets/", "");
+                            InputStream is = getAssets().open(assetPath);
+                            Map<String, String> headers = new HashMap<>();
+                            headers.put("Access-Control-Allow-Origin", "*");
+                            return new WebResourceResponse("application/javascript", "UTF-8", 200, "OK", headers, is);
+                        } catch (Exception ignored) {}
                     }
                 }
-                return super.shouldInterceptRequest(view, request);
+                return assetLoader.shouldInterceptRequest(request.getUrl());
             }
         });
 
         // Handle initial intent if app was launched by tapping a PDF
         handleIntent(getIntent());
 
-        webView.loadUrl("file:///android_asset/index.html");
+        webView.loadUrl("https://appassets.androidplatform.net/assets/index.html");
     }
 
     @Override
@@ -83,7 +114,7 @@ public class MainActivity extends AppCompatActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleIntent(intent);
-        if (isPageLoaded && currentPdfUri != null) {
+        if (isJsReady && currentPdfUri != null) {
             dispatchCurrentPdfToJs();
         }
     }
@@ -96,6 +127,12 @@ public class MainActivity extends AppCompatActivity {
         if (Intent.ACTION_VIEW.equals(action) && data != null) {
             currentPdfUri = data;
             currentPdfName = extractFileName(data);
+            try {
+                int flags = intent.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                if (flags != 0) {
+                    getContentResolver().takePersistableUriPermission(data, flags);
+                }
+            } catch (Exception ignored) {}
         }
     }
 
@@ -120,8 +157,8 @@ public class MainActivity extends AppCompatActivity {
     private void dispatchCurrentPdfToJs() {
         if (currentPdfUri == null) return;
         final String safeName = currentPdfName.replace("'", "\\'");
-        // Ask PDF.js to load via the intercepted URL
-        final String js = "if (window.app && window.app.loadPdfFromUrl) { window.app.loadPdfFromUrl('current_pdf_stream', '" + safeName + "'); }";
+        final String url = "https://appassets.androidplatform.net/assets/current_pdf_stream?t=" + System.currentTimeMillis();
+        final String js = "if (window.app && window.app.loadPdfFromUrl) { window.app.loadPdfFromUrl('" + url + "', '" + safeName + "'); }";
         runOnUiThread(() -> webView.evaluateJavascript(js, null));
     }
 
@@ -137,6 +174,42 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public boolean isAndroidApp() {
             return true;
+        }
+
+        @JavascriptInterface
+        public boolean hasPendingPdf() {
+            return currentPdfUri != null;
+        }
+
+        @JavascriptInterface
+        public String getPendingPdfName() {
+            return currentPdfName;
+        }
+
+        @JavascriptInterface
+        public void notifyAppReady() {
+            isJsReady = true;
+            if (currentPdfUri != null) {
+                dispatchCurrentPdfToJs();
+            }
+        }
+
+        @JavascriptInterface
+        public String getPdfBase64() {
+            if (currentPdfUri == null) return "";
+            try (InputStream is = getContentResolver().openInputStream(currentPdfUri);
+                 ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+                if (is == null) return "";
+                byte[] buffer = new byte[16384];
+                int read;
+                while ((read = is.read(buffer)) != -1) {
+                    baos.write(buffer, 0, read);
+                }
+                return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+            } catch (Exception e) {
+                Log.e(TAG, "Error encoding PDF as Base64", e);
+                return "";
+            }
         }
     }
 

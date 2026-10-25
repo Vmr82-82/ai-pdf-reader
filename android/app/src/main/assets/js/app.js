@@ -133,6 +133,19 @@ class ReaderApp {
     const savedTheme = await Storage.getSetting('theme', 'theme-charcoal');
     this.applyTheme(savedTheme);
 
+    // If Android launched with a PDF or has pending intent, prioritize opening that document
+    if (window.AndroidBridge) {
+      if (typeof window.AndroidBridge.notifyAppReady === 'function') {
+        window.AndroidBridge.notifyAppReady();
+      }
+      if (typeof window.AndroidBridge.hasPendingPdf === 'function' && window.AndroidBridge.hasPendingPdf()) {
+        const name = window.AndroidBridge.getPendingPdfName ? window.AndroidBridge.getPendingPdfName() : 'Document.pdf';
+        const url = 'https://appassets.androidplatform.net/assets/current_pdf_stream?t=' + Date.now();
+        await this.loadPdfFromUrl(url, name);
+        return;
+      }
+    }
+
     const lastDoc = await Storage.getLatestDocument();
     if (lastDoc && lastDoc.data) {
       this.loadPdfFromArrayBuffer(lastDoc.data, lastDoc.name, lastDoc.id);
@@ -194,25 +207,51 @@ class ReaderApp {
 
   async loadPdfFromUrl(url, name) {
     try {
+      this.showToast(`Opening: ${name}...`);
       this.docTitle.textContent = name;
-      this.docId = 'doc_' + name.replace(/[^a-zA-Z0-9_-]/g, '_');
-      this.pdfDoc = await pdfjsLib.getDocument({ url: url }).promise;
-      this.totalPages = this.pdfDoc.numPages;
-      this.totalPagesEl.textContent = this.totalPages;
+      const docId = 'doc_' + name.replace(/[^a-zA-Z0-9_-]/g, '_');
 
-      // Load saved page
-      const savedPage = await Storage.getSetting(`last_page_${this.docId}`, 1);
-      this.currentPage = Math.min(Math.max(1, savedPage), this.totalPages);
+      let arrayBuffer = null;
 
-      // Load highlights for this document
-      this.highlights = await Storage.getHighlightsForDoc(this.docId);
-      this.updateHighlightBadge();
+      // 1. First attempt: fetch from streaming URL
+      try {
+        const resp = await fetch(url);
+        if (resp.ok) {
+          arrayBuffer = await resp.arrayBuffer();
+        } else {
+          console.warn('Fetch stream returned HTTP', resp.status);
+        }
+      } catch (fetchErr) {
+        console.warn('Fetch stream error, trying native bridge fallback:', fetchErr);
+      }
 
-      this.renderPage(this.currentPage);
-      this.showToast(`Loaded: ${name}`);
+      // 2. Second attempt: native bridge Base64 fallback
+      if (!arrayBuffer && window.AndroidBridge && typeof window.AndroidBridge.getPdfBase64 === 'function') {
+        try {
+          const b64 = window.AndroidBridge.getPdfBase64();
+          if (b64 && b64.length > 0) {
+            const binaryString = atob(b64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            arrayBuffer = bytes.buffer;
+          }
+        } catch (b64Err) {
+          console.warn('Base64 bridge fallback error:', b64Err);
+        }
+      }
+
+      if (!arrayBuffer) {
+        throw new Error('Unable to read PDF data from stream or bridge');
+      }
+
+      await Storage.saveDocument(docId, name, arrayBuffer);
+      await this.loadPdfFromArrayBuffer(arrayBuffer, name, docId);
     } catch (err) {
       console.error('Error loading PDF from URL:', err);
-      this.showToast('Could not load PDF document', 'error');
+      this.showToast(`Error: ${err.message || 'Could not load PDF'}`, 'error');
     }
   }
 
@@ -494,6 +533,10 @@ class ReaderApp {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    window.app = new ReaderApp();
+  });
+} else {
   window.app = new ReaderApp();
-});
+}
