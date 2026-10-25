@@ -34,6 +34,8 @@ class ReaderApp {
     this.pageWrapper = document.getElementById('pageWrapper');
     this.pdfCanvas = document.getElementById('pdfCanvas');
     this.textLayerDiv = document.getElementById('textLayer');
+    this.highlightCanvas = document.getElementById('highlightCanvas');
+    this.hlCtx = this.highlightCanvas ? this.highlightCanvas.getContext('2d') : null;
     this.highlightLayer = document.getElementById('highlightLayer');
     this.fileInput = document.getElementById('fileInput');
 
@@ -302,6 +304,19 @@ class ReaderApp {
 
       this.pageWrapper.style.width = `${viewport.width}px`;
       this.pageWrapper.style.height = `${viewport.height}px`;
+      this.pageWrapper.style.setProperty('--scale-factor', this.scale);
+      this.pageWrapper.style.setProperty('--total-scale-factor', this.scale);
+      this.pageWrapper.style.setProperty('--user-unit', '1');
+
+      if (this.highlightCanvas) {
+        this.highlightCanvas.width = viewport.width * dpr;
+        this.highlightCanvas.height = viewport.height * dpr;
+        this.highlightCanvas.style.width = `${viewport.width}px`;
+        this.highlightCanvas.style.height = `${viewport.height}px`;
+        if (this.hlCtx) {
+          this.hlCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+      }
 
       const ctx = this.pdfCanvas.getContext('2d');
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -396,115 +411,183 @@ class ReaderApp {
 
   initHighlightEngine() {
     let isDrawing = false;
-    let startCaret = null;
+    let startX = 0;
+    let startY = 0;
+    let lastX = 0;
+    let lastY = 0;
 
-    const getCaretAtPoint = (x, y) => {
-      if (document.caretRangeFromPoint) {
-        return document.caretRangeFromPoint(x, y);
-      } else if (document.caretPositionFromPoint) {
-        const pos = document.caretPositionFromPoint(x, y);
-        if (pos && pos.offsetNode) {
-          const range = document.createRange();
-          range.setStart(pos.offsetNode, pos.offset);
-          range.setEnd(pos.offsetNode, pos.offset);
-          return range;
-        }
+    const getPos = (clientX, clientY) => {
+      const rect = this.pageWrapper.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(rect.width, clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, clientY - rect.top))
+      };
+    };
+
+    const drawLivePreview = (x1, y1, x2, y2) => {
+      if (!this.hlCtx) return;
+      this.renderHighlightsOnPage();
+
+      const colMap = {
+        amber: 'rgba(251, 191, 36, 0.45)',
+        emerald: 'rgba(52, 211, 153, 0.45)',
+        cyan: 'rgba(56, 189, 248, 0.45)',
+        violet: 'rgba(168, 85, 247, 0.45)',
+        rose: 'rgba(244, 63, 94, 0.45)'
+      };
+      const fillCol = colMap[this.activeColor] || colMap.amber;
+
+      const rx = Math.min(x1, x2);
+      const ry = Math.min(y1, y2) - 12;
+      const rw = Math.max(10, Math.abs(x2 - x1));
+      const rh = 24;
+
+      this.hlCtx.save();
+      this.hlCtx.fillStyle = fillCol;
+      this.hlCtx.shadowColor = fillCol;
+      this.hlCtx.shadowBlur = 10;
+      this.hlCtx.beginPath();
+      if (this.hlCtx.roundRect) {
+        this.hlCtx.roundRect(rx, ry, rw, rh, 4);
+      } else {
+        this.hlCtx.rect(rx, ry, rw, rh);
       }
-      return null;
+      this.hlCtx.fill();
+      this.hlCtx.restore();
     };
 
-    const handleStart = (clientX, clientY, isPen) => {
-      const shouldHighlight = isPen || this.isHighlightMode;
-      if (!shouldHighlight) return;
+    const onStart = (clientX, clientY, isPen) => {
+      if (!this.isHighlightMode && !isPen) return;
 
-      const caret = getCaretAtPoint(clientX, clientY);
-      if (caret && caret.startContainer) {
-        isDrawing = true;
-        startCaret = caret;
-        window.getSelection().removeAllRanges();
-      }
+      const pos = getPos(clientX, clientY);
+      isDrawing = true;
+      startX = pos.x;
+      startY = pos.y;
+      lastX = pos.x;
+      lastY = pos.y;
     };
 
-    const handleMove = (clientX, clientY) => {
-      if (!isDrawing || !startCaret) return;
-
-      const currentCaret = getCaretAtPoint(clientX, clientY);
-      if (!currentCaret || !currentCaret.startContainer) return;
-
-      try {
-        const range = document.createRange();
-        const startNode = startCaret.startContainer;
-        const startOff = startCaret.startOffset;
-        const endNode = currentCaret.startContainer;
-        const endOff = currentCaret.startOffset;
-
-        if (startNode === endNode) {
-          range.setStart(startNode, Math.min(startOff, endOff));
-          range.setEnd(startNode, Math.max(startOff, endOff));
-        } else {
-          const cmp = startNode.compareDocumentPosition(endNode);
-          if (cmp & Node.DOCUMENT_POSITION_FOLLOWING) {
-            range.setStart(startNode, startOff);
-            range.setEnd(endNode, endOff);
-          } else {
-            range.setStart(endNode, endOff);
-            range.setEnd(startNode, startOff);
-          }
-        }
-
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } catch (ignored) {}
+    const onMove = (clientX, clientY) => {
+      if (!isDrawing) return;
+      const pos = getPos(clientX, clientY);
+      lastX = pos.x;
+      lastY = pos.y;
+      drawLivePreview(startX, startY, lastX, lastY);
     };
 
-    const handleEnd = () => {
+    const onEnd = () => {
       if (!isDrawing) return;
       isDrawing = false;
-      startCaret = null;
 
-      setTimeout(() => {
-        this.processTextSelection();
-      }, 40);
+      const dx = Math.abs(lastX - startX);
+      if (dx < 14) {
+        // Just a tap, redraw without adding short highlight
+        this.renderHighlightsOnPage();
+        return;
+      }
+
+      const w = this.pageWrapper.clientWidth;
+      const h = this.pageWrapper.clientHeight;
+      if (!w || !h) return;
+
+      const rx = Math.min(startX, lastX);
+      const ry = Math.min(startY, lastY) - 12;
+      const rw = Math.max(10, dx);
+      const rh = 24;
+
+      // Extract text in this rectangle from text layer if present
+      let extractedText = '';
+      try {
+        const spans = this.textLayerDiv.querySelectorAll('span');
+        const boxLeft = rx;
+        const boxRight = rx + rw;
+        const boxTop = ry - 4;
+        const boxBottom = ry + rh + 4;
+
+        const words = [];
+        spans.forEach(s => {
+          const sLeft = parseFloat(s.style.left) * (w / 100);
+          const sTop = parseFloat(s.style.top) * (h / 100);
+          const sWidth = s.offsetWidth || 30;
+          const sHeight = s.offsetHeight || 16;
+          if (sLeft < boxRight && (sLeft + sWidth) > boxLeft &&
+              sTop < boxBottom && (sTop + sHeight) > boxTop) {
+            if (s.textContent && s.textContent.trim()) {
+              words.push(s.textContent.trim());
+            }
+          }
+        });
+        if (words.length > 0) {
+          extractedText = words.join(' ');
+        }
+      } catch (ignored) {}
+
+      if (!extractedText) {
+        extractedText = `Highlight on Page ${this.currentPage}`;
+      }
+
+      const newHl = {
+        id: 'hl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+        docId: this.docId,
+        page: this.currentPage,
+        text: extractedText,
+        color: this.activeColor,
+        rects: [{
+          left: rx / w,
+          top: ry / h,
+          width: rw / w,
+          height: rh / h
+        }],
+        createdAt: Date.now()
+      };
+
+      Storage.addHighlight(newHl).then(() => {
+        this.highlights.push(newHl);
+        this.renderHighlightsOnPage();
+        this.updateHighlightBadge();
+        this.showToast(`Highlighted in ${this.activeColor.toUpperCase()} ✓`);
+      }).catch(err => {
+        console.error('Save error:', err);
+      });
     };
 
-    // Pointer events on text layer
-    this.textLayerDiv.addEventListener('pointerdown', (e) => {
-      handleStart(e.clientX, e.clientY, e.pointerType === 'pen');
+    // Attach to pageWrapper
+    this.pageWrapper.addEventListener('pointerdown', (e) => {
+      onStart(e.clientX, e.clientY, e.pointerType === 'pen');
     });
 
-    this.textLayerDiv.addEventListener('pointermove', (e) => {
+    this.pageWrapper.addEventListener('pointermove', (e) => {
       if (isDrawing) {
-        handleMove(e.clientX, e.clientY);
+        onMove(e.clientX, e.clientY);
       }
     });
 
-    window.addEventListener('pointerup', handleEnd);
+    window.addEventListener('pointerup', onEnd);
     window.addEventListener('pointercancel', () => {
       isDrawing = false;
-      startCaret = null;
+      this.renderHighlightsOnPage();
     });
 
-    // Touch events for mobile/tablet WebViews
-    this.textLayerDiv.addEventListener('touchstart', (e) => {
+    // Touch events for mobile WebView
+    this.pageWrapper.addEventListener('touchstart', (e) => {
       if (e.touches.length === 1) {
         const t = e.touches[0];
         const isPen = t.touchType === 'stylus';
         if (this.isHighlightMode || isPen) {
-          handleStart(t.clientX, t.clientY, isPen);
+          onStart(t.clientX, t.clientY, isPen);
         }
       }
     }, { passive: true });
 
-    this.textLayerDiv.addEventListener('touchmove', (e) => {
+    this.pageWrapper.addEventListener('touchmove', (e) => {
       if (isDrawing && e.touches.length === 1) {
-        e.preventDefault(); // Stop page scrolling during active highlight drawing!
+        e.preventDefault(); // Lock scroll while drawing!
         const t = e.touches[0];
-        handleMove(t.clientX, t.clientY);
+        onMove(t.clientX, t.clientY);
       }
     }, { passive: false });
 
-    this.textLayerDiv.addEventListener('touchend', handleEnd);
+    this.pageWrapper.addEventListener('touchend', onEnd);
   }
 
   initGestures() {
@@ -685,18 +768,54 @@ class ReaderApp {
 
   renderHighlightsOnPage() {
     this.highlightLayer.innerHTML = '';
+    if (this.hlCtx && this.highlightCanvas) {
+      this.hlCtx.clearRect(0, 0, this.highlightCanvas.width, this.highlightCanvas.height);
+    }
+
     const pageHls = this.highlights.filter(h => h.page === this.currentPage);
     const w = this.pageWrapper.clientWidth;
     const h = this.pageWrapper.clientHeight;
 
+    const colMap = {
+      amber: { fill: 'rgba(251, 191, 36, 0.45)', glow: 'rgba(251, 191, 36, 0.25)' },
+      emerald: { fill: 'rgba(52, 211, 153, 0.45)', glow: 'rgba(52, 211, 153, 0.25)' },
+      cyan: { fill: 'rgba(56, 189, 248, 0.45)', glow: 'rgba(56, 189, 248, 0.25)' },
+      violet: { fill: 'rgba(168, 85, 247, 0.45)', glow: 'rgba(168, 85, 247, 0.25)' },
+      rose: { fill: 'rgba(244, 63, 94, 0.45)', glow: 'rgba(244, 63, 94, 0.25)' }
+    };
+
     pageHls.forEach(hl => {
+      const col = colMap[hl.color] || colMap.amber;
+
       hl.rects.forEach(r => {
+        const rx = r.left * w;
+        const ry = r.top * h;
+        const rw = r.width * w;
+        const rh = r.height * h;
+
+        // Draw crisp luminous highlight on canvas
+        if (this.hlCtx) {
+          this.hlCtx.save();
+          this.hlCtx.fillStyle = col.fill;
+          this.hlCtx.shadowColor = col.glow;
+          this.hlCtx.shadowBlur = 8;
+          this.hlCtx.beginPath();
+          if (this.hlCtx.roundRect) {
+            this.hlCtx.roundRect(rx, ry, rw, rh, 3);
+          } else {
+            this.hlCtx.rect(rx, ry, rw, rh);
+          }
+          this.hlCtx.fill();
+          this.hlCtx.restore();
+        }
+
+        // Clickable hitbox in highlightLayer
         const box = document.createElement('div');
         box.className = `hl-box ${hl.color}`;
-        box.style.left = `${r.left * w}px`;
-        box.style.top = `${r.top * h}px`;
-        box.style.width = `${r.width * w}px`;
-        box.style.height = `${r.height * h}px`;
+        box.style.left = `${rx}px`;
+        box.style.top = `${ry}px`;
+        box.style.width = `${rw}px`;
+        box.style.height = `${rh}px`;
 
         box.addEventListener('click', (ev) => {
           ev.stopPropagation();
