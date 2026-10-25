@@ -16,12 +16,15 @@ class ReaderApp {
     this.totalPages = 0;
     this.scale = 1.35;
     this.activeColor = 'amber'; // amber, emerald, cyan, violet, rose
+    this.isHighlightMode = true; // Active highlighter by default
     this.currentTheme = 'theme-charcoal';
     this.highlights = [];
     this.isRendering = false;
     this.pendingPage = null;
 
     this.initElements();
+    this.updateActiveColorStyle();
+    this.setMode(true);
     this.initEvents();
     this.initSettingsAndLastDoc();
   }
@@ -45,7 +48,8 @@ class ReaderApp {
     this.themeBtn = document.getElementById('themeBtn');
     this.openDrawerBtn = document.getElementById('openDrawerBtn');
     this.hlBadge = document.getElementById('hlBadge');
-    this.modeIndicator = document.getElementById('modeIndicator');
+    this.modeToggleBtn = document.getElementById('modeToggleBtn');
+    this.modeText = document.getElementById('modeText');
 
     // Drawers & Popovers
     this.drawer = document.getElementById('highlightsDrawer');
@@ -87,15 +91,21 @@ class ReaderApp {
       this.renderPage(this.currentPage);
     });
 
-    // Palette dots
+    // Palette dots (Amber, Emerald, Cyan, Violet, Rose)
     document.querySelectorAll('.color-dot').forEach(dot => {
       dot.addEventListener('click', () => {
         document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('active'));
         dot.classList.add('active');
         this.activeColor = dot.dataset.color;
-        document.documentElement.style.setProperty('--active-hl', `var(--hl-${this.activeColor})`);
+        this.updateActiveColorStyle();
+        this.setMode(true); // Automatically activates highlight mode
         this.showToast(`Highlighter: ${this.activeColor.toUpperCase()}`);
       });
+    });
+
+    // Mode Toggle Button (Highlight vs Scroll)
+    this.modeToggleBtn.addEventListener('click', () => {
+      this.toggleMode();
     });
 
     // Theme toggle
@@ -108,6 +118,9 @@ class ReaderApp {
 
     // Gestures for swipe/scroll page navigation
     this.initGestures();
+
+    // Drag-to-highlight engine (character-snapping, zero delay)
+    this.initHighlightEngine();
 
     // Text Selection for Stylus / Pen / Touch across window
     window.addEventListener('pointerup', (e) => this.handlePointerUp(e));
@@ -324,6 +337,12 @@ class ReaderApp {
       // Render existing highlights for this page
       this.renderHighlightsOnPage();
 
+      if (this.isHighlightMode) {
+        this.textLayerDiv.classList.add('highlight-active');
+      } else {
+        this.textLayerDiv.classList.remove('highlight-active');
+      }
+
     } catch (err) {
       console.error('Render error:', err);
     } finally {
@@ -336,6 +355,158 @@ class ReaderApp {
     }
   }
 
+  setMode(highlight) {
+    this.isHighlightMode = highlight;
+    if (this.modeToggleBtn && this.modeText) {
+      if (this.isHighlightMode) {
+        this.modeToggleBtn.classList.add('highlight-active');
+        this.modeText.textContent = 'Highlight';
+      } else {
+        this.modeToggleBtn.classList.remove('highlight-active');
+        this.modeText.textContent = 'Scroll';
+      }
+    }
+    if (this.textLayerDiv) {
+      if (this.isHighlightMode) {
+        this.textLayerDiv.classList.add('highlight-active');
+      } else {
+        this.textLayerDiv.classList.remove('highlight-active');
+      }
+    }
+  }
+
+  toggleMode() {
+    this.setMode(!this.isHighlightMode);
+    this.showToast(this.isHighlightMode ? 'Highlight Mode: ON' : 'Scroll Mode: ON');
+  }
+
+  updateActiveColorStyle() {
+    const colors = {
+      amber: { solid: '#fbbf24', glow: 'rgba(251, 191, 36, 0.45)' },
+      emerald: { solid: '#34d399', glow: 'rgba(52, 211, 153, 0.45)' },
+      cyan: { solid: '#38bdf8', glow: 'rgba(56, 189, 248, 0.45)' },
+      violet: { solid: '#a855f7', glow: 'rgba(168, 85, 247, 0.45)' },
+      rose: { solid: '#f43f5e', glow: 'rgba(244, 63, 94, 0.45)' }
+    };
+    const c = colors[this.activeColor] || colors.amber;
+    document.documentElement.style.setProperty('--active-hl', `var(--hl-${this.activeColor})`);
+    document.documentElement.style.setProperty('--active-color-solid', c.solid);
+    document.documentElement.style.setProperty('--active-hl-glow', c.glow);
+  }
+
+  initHighlightEngine() {
+    let isDrawing = false;
+    let startCaret = null;
+
+    const getCaretAtPoint = (x, y) => {
+      if (document.caretRangeFromPoint) {
+        return document.caretRangeFromPoint(x, y);
+      } else if (document.caretPositionFromPoint) {
+        const pos = document.caretPositionFromPoint(x, y);
+        if (pos && pos.offsetNode) {
+          const range = document.createRange();
+          range.setStart(pos.offsetNode, pos.offset);
+          range.setEnd(pos.offsetNode, pos.offset);
+          return range;
+        }
+      }
+      return null;
+    };
+
+    const handleStart = (clientX, clientY, isPen) => {
+      const shouldHighlight = isPen || this.isHighlightMode;
+      if (!shouldHighlight) return;
+
+      const caret = getCaretAtPoint(clientX, clientY);
+      if (caret && caret.startContainer) {
+        isDrawing = true;
+        startCaret = caret;
+        window.getSelection().removeAllRanges();
+      }
+    };
+
+    const handleMove = (clientX, clientY) => {
+      if (!isDrawing || !startCaret) return;
+
+      const currentCaret = getCaretAtPoint(clientX, clientY);
+      if (!currentCaret || !currentCaret.startContainer) return;
+
+      try {
+        const range = document.createRange();
+        const startNode = startCaret.startContainer;
+        const startOff = startCaret.startOffset;
+        const endNode = currentCaret.startContainer;
+        const endOff = currentCaret.startOffset;
+
+        if (startNode === endNode) {
+          range.setStart(startNode, Math.min(startOff, endOff));
+          range.setEnd(startNode, Math.max(startOff, endOff));
+        } else {
+          const cmp = startNode.compareDocumentPosition(endNode);
+          if (cmp & Node.DOCUMENT_POSITION_FOLLOWING) {
+            range.setStart(startNode, startOff);
+            range.setEnd(endNode, endOff);
+          } else {
+            range.setStart(endNode, endOff);
+            range.setEnd(startNode, startOff);
+          }
+        }
+
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (ignored) {}
+    };
+
+    const handleEnd = () => {
+      if (!isDrawing) return;
+      isDrawing = false;
+      startCaret = null;
+
+      setTimeout(() => {
+        this.processTextSelection();
+      }, 40);
+    };
+
+    // Pointer events on text layer
+    this.textLayerDiv.addEventListener('pointerdown', (e) => {
+      handleStart(e.clientX, e.clientY, e.pointerType === 'pen');
+    });
+
+    this.textLayerDiv.addEventListener('pointermove', (e) => {
+      if (isDrawing) {
+        handleMove(e.clientX, e.clientY);
+      }
+    });
+
+    window.addEventListener('pointerup', handleEnd);
+    window.addEventListener('pointercancel', () => {
+      isDrawing = false;
+      startCaret = null;
+    });
+
+    // Touch events for mobile/tablet WebViews
+    this.textLayerDiv.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        const isPen = t.touchType === 'stylus';
+        if (this.isHighlightMode || isPen) {
+          handleStart(t.clientX, t.clientY, isPen);
+        }
+      }
+    }, { passive: true });
+
+    this.textLayerDiv.addEventListener('touchmove', (e) => {
+      if (isDrawing && e.touches.length === 1) {
+        e.preventDefault(); // Stop page scrolling during active highlight drawing!
+        const t = e.touches[0];
+        handleMove(t.clientX, t.clientY);
+      }
+    }, { passive: false });
+
+    this.textLayerDiv.addEventListener('touchend', handleEnd);
+  }
+
   initGestures() {
     let touchStartX = 0;
     let touchStartY = 0;
@@ -344,6 +515,11 @@ class ReaderApp {
 
     // Detect horizontal swipe on viewer container
     this.viewerContainer.addEventListener('touchstart', (e) => {
+      // If highlight mode is active and touch started on textLayer, don't initiate a page swipe
+      if (this.isHighlightMode && e.target.closest('#textLayer')) {
+        isSwiping = false;
+        return;
+      }
       if (e.touches.length !== 1) {
         isSwiping = false;
         return;
@@ -446,12 +622,6 @@ class ReaderApp {
   }
 
   handlePointerUp(e) {
-    if (e.pointerType === 'pen') {
-      this.modeIndicator.textContent = '🖊️ Stylus';
-    } else if (e.pointerType === 'touch') {
-      this.modeIndicator.textContent = '👆 Touch';
-    }
-
     // Give browser selection a moment to complete bounding boxes
     setTimeout(() => {
       this.processTextSelection();
