@@ -101,13 +101,17 @@ class ReaderApp {
     // Theme toggle
     this.themeBtn.addEventListener('click', () => this.cycleTheme());
 
-    // Drawer
+    // Highlights Drawer
     this.openDrawerBtn.addEventListener('click', () => this.openDrawer());
     this.closeDrawerBtn.addEventListener('click', () => this.closeDrawer());
     this.exportBtn.addEventListener('click', () => this.exportHighlights());
 
-    // Text Selection for Stylus/Pen and Mouse
-    this.textLayerDiv.addEventListener('pointerup', (e) => this.handlePointerUp(e));
+    // Gestures for swipe/scroll page navigation
+    this.initGestures();
+
+    // Text Selection for Stylus / Pen / Touch across window
+    window.addEventListener('pointerup', (e) => this.handlePointerUp(e));
+    window.addEventListener('touchend', (e) => this.handlePointerUp(e));
 
     // Keyboard navigation (desktop / bluetooth keyboard on tablet)
     window.addEventListener('keydown', (e) => {
@@ -295,18 +299,27 @@ class ReaderApp {
       };
       await page.render(renderContext).promise;
 
-      // Render Text Layer
+      // Render Text Layer (Modern PDF.js v5 with fallback)
       this.textLayerDiv.innerHTML = '';
       this.textLayerDiv.style.width = `${viewport.width}px`;
       this.textLayerDiv.style.height = `${viewport.height}px`;
 
       const textContent = await page.getTextContent();
-      await pdfjsLib.renderTextLayer({
-        textContentSource: textContent,
-        container: this.textLayerDiv,
-        viewport: viewport,
-        textDivs: []
-      }).promise;
+      if (pdfjsLib.TextLayer) {
+        const textLayer = new pdfjsLib.TextLayer({
+          textContentSource: textContent,
+          container: this.textLayerDiv,
+          viewport: viewport
+        });
+        await textLayer.render();
+      } else if (typeof pdfjsLib.renderTextLayer === 'function') {
+        await pdfjsLib.renderTextLayer({
+          textContentSource: textContent,
+          container: this.textLayerDiv,
+          viewport: viewport,
+          textDivs: []
+        }).promise;
+      }
 
       // Render existing highlights for this page
       this.renderHighlightsOnPage();
@@ -323,16 +336,129 @@ class ReaderApp {
     }
   }
 
+  initGestures() {
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchStartTime = 0;
+    let isSwiping = false;
+
+    // Detect horizontal swipe on viewer container
+    this.viewerContainer.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) {
+        isSwiping = false;
+        return;
+      }
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+      touchStartTime = Date.now();
+      isSwiping = true;
+    }, { passive: true });
+
+    this.viewerContainer.addEventListener('touchmove', (e) => {
+      if (!isSwiping || e.touches.length !== 1) return;
+      const currentX = e.touches[0].clientX;
+      const currentY = e.touches[0].clientY;
+      const dx = currentX - touchStartX;
+      const dy = currentY - touchStartY;
+
+      // Only give tactile feedback if horizontal movement dominates and there is no active text selection
+      const sel = window.getSelection();
+      const hasSelection = sel && !sel.isCollapsed && sel.toString().trim().length > 0;
+      if (!hasSelection && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 20) {
+        this.pageWrapper.style.transition = 'none';
+        this.pageWrapper.style.transform = `translateX(${dx * 0.25}px)`;
+      }
+    }, { passive: true });
+
+    const handleTouchEnd = (e) => {
+      if (!isSwiping) return;
+      isSwiping = false;
+      this.pageWrapper.style.transition = 'transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1)';
+      this.pageWrapper.style.transform = 'translateX(0)';
+
+      const touchEndX = (e.changedTouches && e.changedTouches.length)
+        ? e.changedTouches[0].clientX
+        : touchStartX;
+      const touchEndY = (e.changedTouches && e.changedTouches.length)
+        ? e.changedTouches[0].clientY
+        : touchStartY;
+      const dx = touchEndX - touchStartX;
+      const dy = touchEndY - touchStartY;
+      const dt = Date.now() - touchStartTime;
+
+      const sel = window.getSelection();
+      const hasSelection = sel && !sel.isCollapsed && sel.toString().trim().length > 0;
+      if (hasSelection) return; // If selecting text, let highlighter handle it
+
+      // If horizontal flick/swipe was made
+      if (Math.abs(dx) > Math.abs(dy) * 1.15 && Math.abs(dx) > 40 && dt < 800) {
+        if (dx < -40) {
+          // Swipe left -> Next Page
+          this.changePage(1);
+        } else if (dx > 40) {
+          // Swipe right -> Previous Page
+          this.changePage(-1);
+        }
+      }
+    };
+
+    this.viewerContainer.addEventListener('touchend', handleTouchEnd);
+    this.viewerContainer.addEventListener('touchcancel', () => {
+      isSwiping = false;
+      this.pageWrapper.style.transform = 'translateX(0)';
+    });
+
+    // Horizontal wheel / trackpad scrolling
+    let wheelTimer = null;
+    this.viewerContainer.addEventListener('wheel', (e) => {
+      if (Math.abs(e.deltaX) > 35 && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        if (!wheelTimer) {
+          if (e.deltaX > 0) this.changePage(1);
+          else this.changePage(-1);
+          wheelTimer = setTimeout(() => { wheelTimer = null; }, 350);
+        }
+      }
+    }, { passive: true });
+
+    // Edge Tap Navigation (Tapping near right edge goes next, near left edge goes prev)
+    this.viewerContainer.addEventListener('click', (e) => {
+      if (e.target.closest('#toolbar') || e.target.closest('#highlightsDrawer') || 
+          e.target.closest('#hlPopover') || e.target.closest('.hl-box')) {
+        return;
+      }
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
+        return; // Selection in progress
+      }
+
+      const screenWidth = window.innerWidth;
+      const clickX = e.clientX;
+
+      // Right 12% margin -> Next page
+      if (clickX > screenWidth * 0.88) {
+        this.changePage(1);
+      }
+      // Left 12% margin -> Previous page
+      else if (clickX < screenWidth * 0.12) {
+        this.changePage(-1);
+      }
+    });
+  }
+
   handlePointerUp(e) {
-    // DUAL INPUT ENGINE:
-    // If pointer was touch, do NOT auto-highlight (allow finger to scroll freely)
-    // If pointer was pen or mouse, trigger highlight creation on text selection!
-    if (e.pointerType === 'touch') {
-      this.modeIndicator.textContent = '👆 Touch Scroll';
-      return;
+    if (e.pointerType === 'pen') {
+      this.modeIndicator.textContent = '🖊️ Stylus';
+    } else if (e.pointerType === 'touch') {
+      this.modeIndicator.textContent = '👆 Touch';
     }
 
-    this.modeIndicator.textContent = '🖊️ Stylus Active';
+    // Give browser selection a moment to complete bounding boxes
+    setTimeout(() => {
+      this.processTextSelection();
+    }, 60);
+  }
+
+  processTextSelection() {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
 
@@ -340,21 +466,31 @@ class ReaderApp {
     const selectedText = range.toString().trim();
     if (!selectedText) return;
 
+    // Check if selection belongs to pageWrapper
+    if (!this.pageWrapper.contains(range.commonAncestorContainer) &&
+        this.pageWrapper !== range.commonAncestorContainer) {
+      return;
+    }
+
     const wrapperRect = this.pageWrapper.getBoundingClientRect();
     const clientRects = range.getClientRects();
-    if (!clientRects.length) return;
+    if (!clientRects || !clientRects.length) return;
 
     // Convert client rects to relative percentages for responsive scaling
     const rects = [];
     for (let i = 0; i < clientRects.length; i++) {
       const r = clientRects[i];
-      rects.push({
-        left: (r.left - wrapperRect.left) / wrapperRect.width,
-        top: (r.top - wrapperRect.top) / wrapperRect.height,
-        width: r.width / wrapperRect.width,
-        height: r.height / wrapperRect.height
-      });
+      if (r.width > 2 && r.height > 2) {
+        rects.push({
+          left: (r.left - wrapperRect.left) / wrapperRect.width,
+          top: (r.top - wrapperRect.top) / wrapperRect.height,
+          width: r.width / wrapperRect.width,
+          height: r.height / wrapperRect.height
+        });
+      }
     }
+
+    if (!rects.length) return;
 
     const newHl = {
       id: 'hl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
@@ -370,8 +506,10 @@ class ReaderApp {
       this.highlights.push(newHl);
       this.renderHighlightsOnPage();
       this.updateHighlightBadge();
-      this.showToast('Highlighted ✓');
+      this.showToast(`Highlighted in ${this.activeColor.toUpperCase()} ✓`);
       sel.removeAllRanges(); // clean unselect
+    }).catch(err => {
+      console.error('Save highlight error:', err);
     });
   }
 

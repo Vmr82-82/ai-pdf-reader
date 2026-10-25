@@ -248,6 +248,8 @@ body.theme-day {
   border-radius: 4px;
   overflow: hidden;
   margin: auto;
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
 }
 
 #pdfCanvas {
@@ -269,6 +271,8 @@ body.theme-day {
   user-select: text;
   -webkit-user-select: text;
   cursor: text;
+  z-index: 2;
+  pointer-events: auto;
 }
 
 .textLayer span {
@@ -277,6 +281,8 @@ body.theme-day {
   white-space: pre;
   cursor: text;
   transform-origin: 0% 0%;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .textLayer ::selection {
@@ -291,7 +297,7 @@ body.theme-day {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 2;
+  z-index: 3;
 }
 
 .hl-box {
@@ -301,6 +307,10 @@ body.theme-day {
   cursor: pointer;
   transition: opacity 0.15s ease, transform 0.15s ease;
   mix-blend-mode: screen;
+}
+
+body.theme-day .hl-box {
+  mix-blend-mode: multiply;
 }
 
 .hl-box.amber   { background: var(--hl-amber);   box-shadow: 0 0 6px var(--hl-amber-glow); }
